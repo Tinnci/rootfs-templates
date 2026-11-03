@@ -1,6 +1,16 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
+
+# The on-disk VG name is part of the Halium boot contract.
+exec 9>/tmp/t870-rootfs-image.lock
+flock -n 9 || { echo "Another image build is active" >&2; exit 1; }
+if vgs droidian >/dev/null 2>&1; then
+    echo "An existing droidian VG prevents an isolated image build" >&2
+    exit 1
+fi
+DEVICE=""
+VG_CREATED=no
 
 ROOTFS_PATH=$(find ${PWD} -maxdepth 1 -mindepth 1 -type d -name '.debos-*' -printf '%T@ %p\n' | sort -nr | head -n 1 | awk '{ print $2 }')/root
 ROOTFS_SIZE=$(du -sm $ROOTFS_PATH | awk '{ print $1 }')
@@ -11,7 +21,14 @@ IMG_SIZE=$(( (${ROOTFS_SIZE} * 100 / 95) + 250 + 32 + 32 )) # FIXME 250MB + 32MB
 IMG_MOUNTPOINT=".image"
 
 clean() {
-	rm -rf ${WORK_DIR}
+    status=$?
+    trap - EXIT
+    set +e
+    mountpoint -q "${IMG_MOUNTPOINT}" && umount "${IMG_MOUNTPOINT}"
+    [ "$VG_CREATED" != yes ] || vgchange -an droidian
+    [ -z "$DEVICE" ] || losetup -d "$DEVICE"
+    rm -rf -- "${WORK_DIR}"
+    exit "$status"
 }
 trap clean EXIT
 
@@ -20,13 +37,11 @@ mkdir ${ZIP_NAME}.work
 
 # create target base image
 echo "Creating empty image"
-dd if=/dev/zero of=${WORK_DIR}/userdata.raw bs=1M count=${IMG_SIZE}
+truncate -s "${IMG_SIZE}M" "${WORK_DIR}/userdata.raw"
 
 # Loop mount
 echo "Mounting image"
-DEVICE=$(losetup -f)
-
-losetup ${DEVICE} ${WORK_DIR}/userdata.raw
+DEVICE=$(losetup --find --show "${WORK_DIR}/userdata.raw")
 
 # Create LVM physical volume
 echo "Creating PV"
@@ -35,6 +50,7 @@ pvcreate ${DEVICE}
 # Create LVM volume group
 echo "Creating VG"
 vgcreate droidian "${DEVICE}"
+VG_CREATED=yes
 
 # Create LVs, currently
 # 1) droidian-persistent (128M)
@@ -74,8 +90,7 @@ mount ${ROOTFS_VOLUME} ${IMG_MOUNTPOINT}
 
 # copy rootfs content
 echo "Syncing rootfs content"
-rsync --archive -H -A -X ${ROOTFS_PATH}/* ${IMG_MOUNTPOINT}
-rsync --archive -H -A -X ${ROOTFS_PATH}/.[^.]* ${IMG_MOUNTPOINT}
+rsync --archive -H -A -X "${ROOTFS_PATH}/" "${IMG_MOUNTPOINT}/"
 sync
 
 # Create stamp file
@@ -88,8 +103,10 @@ umount ${IMG_MOUNTPOINT}
 
 # clean up
 vgchange -an droidian
+VG_CREATED=no
 
 losetup -d ${DEVICE}
+DEVICE=""
 
 img2simg ${WORK_DIR}/userdata.raw ${WORK_DIR}/userdata.img
 rm -f ${WORK_DIR}/userdata.raw
@@ -100,10 +117,10 @@ cp -R android-image-flashing-template/template ${WORK_DIR}/target
 mv ${WORK_DIR}/userdata.img ${WORK_DIR}/target/data/userdata.img
 
 # Copy kernel and stuff
-bootimage=$(find ${ROOTFS_PATH}/boot -iname boot.img* -type f | head -n 1)
-recovery=$(find ${ROOTFS_PATH}/boot -iname recovery.img* -type f | head -n 1)
-dtbo=$(find ${ROOTFS_PATH}/boot -iname dtbo.img* -type f | head -n 1)
-vbmeta=$(find ${ROOTFS_PATH}/boot -iname vbmeta.img* -type f | head -n 1)
+bootimage=$(find ${ROOTFS_PATH}/boot -iname "boot.img*" -type f -print -quit)
+recovery=$(find ${ROOTFS_PATH}/boot -iname "recovery.img*" -type f -print -quit)
+dtbo=$(find ${ROOTFS_PATH}/boot -iname "dtbo.img*" -type f -print -quit)
+vbmeta=$(find ${ROOTFS_PATH}/boot -iname "vbmeta.img*" -type f -print -quit)
 
 [ -e "${bootimage}" ] && cp "${bootimage}" ${WORK_DIR}/target/data/boot.img
 [ -e "${recovery}" ] && cp "${recovery}" ${WORK_DIR}/target/data/recovery.img

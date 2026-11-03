@@ -4,6 +4,16 @@
 architecture: {{ $architecture }}
 actions:
 
+ - action: overlay
+   description: Copy locally built device packages
+   source: ../../apt
+   destination: /var/lib/t870-apt
+
+ - action: run
+   chroot: true
+   description: Enable locally built packages
+   command: echo 'deb [trusted=yes] file:/var/lib/t870-apt ./' > /etc/apt/sources.list.d/t870-local.list && apt-get update
+
  - action: run
    chroot: true
    description: Install device adaptation
