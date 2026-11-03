@@ -79,7 +79,8 @@ if [ -n "${adaptation_packages}" ]; then
 	for package in ${adaptation_packages}; do
 		# TODO: Move package extraction to a function?
 		mkdir -p "${pkg_extract_dir}"
-		dpkg-deb -x ${adaptation_download_target}/${package}_*.deb ${pkg_extract_dir}
+		package_name="${package%%=*}"
+		dpkg-deb -x ${adaptation_download_target}/${package_name}_*.deb ${pkg_extract_dir}
 
 		# Handle package lists
 		for repository in $(find ${pkg_extract_dir} -wholename '*/sources.list.d/*.list' -type f); do
